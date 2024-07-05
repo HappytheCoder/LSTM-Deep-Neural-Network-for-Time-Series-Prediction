@@ -1,4 +1,4 @@
-# LSTM Deep Neural Network for Time Series Prediction
+# LSTM Deep Neural Network for Travel Time Prediction
 
 This repository contains a Python project demonstrating how to build and train a deep learning model for time series prediction using LSTM and deep neural networks in PyTorch. The model is designed to predict the `currenttraveltime` based on several traffic-related features.
 
