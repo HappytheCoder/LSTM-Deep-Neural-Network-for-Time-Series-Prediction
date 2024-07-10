@@ -18,6 +18,8 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
+import platform
+import seaborn as sns
 
 # Matplotlib for plotting and visualization
 import matplotlib.pyplot as plt
@@ -25,11 +27,14 @@ import matplotlib.pyplot as plt
 # Set seed for reproducibility
 np.random.seed(42)
 torch.manual_seed(42)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(42)
-    device = torch.device('cuda')
-else:
-    device = torch.device('cpu')
+
+
+
+# Set device for training
+if platform.system() == 'Darwin':  # Check if the system is MacOS
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+else:  # For other platforms like Windows or Linux
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def create_sequences(data, sequence_length, target_size, step_size, features, target_feature):
@@ -65,16 +70,24 @@ def create_sequences(data, sequence_length, target_size, step_size, features, ta
 
 
 # Load data
-data = pd.read_csv("data_extended2.csv")
+data = pd.read_csv("data_extended_new_demand_network.csv")
 
 # Define features
 selected_features = ['currentspeed', 'currentdensity', 'currenttraveltime', 'currentflow']
 
 # Prepare data using selected features
-sequence_length = 20
+sequence_length = 30
 target_size = 10
 step_size = 1
 X, y = create_sequences(data, sequence_length, target_size, step_size, selected_features, 'currenttraveltime')
+
+# plotting y values frequency
+plt.figure(figsize=(10, 6))
+sns.histplot(y, bins=10, kde=True)
+plt.title('Distribution of Current Travel Time')
+plt.xlabel('Current Travel Time')
+plt.ylabel('Frequency')
+plt.show()
 
 # Standardize sequences
 scaler = StandardScaler()
@@ -88,7 +101,7 @@ X_train, X_test, y_train, y_test = train_test_split(X_tensor, y_tensor, test_siz
 
 # Define Deep Neural Network class
 class DeepNN(nn.Module):
-    def __init__(self, input_size, hidden_sizes, output_size, dropout_prob=0.5):
+    def __init__(self, input_size, hidden_sizes, output_size):
         """
         Initialize the deep neural network.
 
@@ -96,15 +109,12 @@ class DeepNN(nn.Module):
         - input_size: Number of input features.
         - hidden_sizes: List of sizes for hidden layers.
         - output_size: Number of output features.
-        - dropout_prob: Dropout probability for regularization.
         """
         super(DeepNN, self).__init__()
         self.hidden_layers = nn.ModuleList()
-        self.dropouts = nn.ModuleList()
         prev_size = input_size
         for size in hidden_sizes:
             self.hidden_layers.append(nn.Linear(prev_size, size))
-            self.dropouts.append(nn.Dropout(dropout_prob))
             prev_size = size
         self.output_layer = nn.Linear(prev_size, output_size)
 
@@ -118,16 +128,15 @@ class DeepNN(nn.Module):
         Returns:
         - x: Output tensor.
         """
-        for layer, dropout in zip(self.hidden_layers, self.dropouts):
+        for layer in self.hidden_layers:
             x = torch.relu(layer(x))
-            x = dropout(x)
         x = self.output_layer(x)
         return x
 
 
 # Define LSTM model
 class LSTMNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, deep_nn_hidden_sizes, output_size, dropout_prob=0.5):
+    def __init__(self, input_size, hidden_size, num_layers, deep_nn_hidden_sizes, output_size):
         """
         Initialize the LSTM network with a deep neural network on top.
 
@@ -137,11 +146,10 @@ class LSTMNetwork(nn.Module):
         - num_layers: Number of recurrent layers.
         - deep_nn_hidden_sizes: List of sizes for hidden layers in the deep neural network.
         - output_size: Number of output features.
-        - dropout_prob: Dropout probability for regularization.
         """
         super(LSTMNetwork, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_prob)
-        self.deep_nn = DeepNN(hidden_size, deep_nn_hidden_sizes, output_size, dropout_prob)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.deep_nn = DeepNN(hidden_size, deep_nn_hidden_sizes, output_size)
 
     def forward(self, x):
         """
@@ -162,26 +170,25 @@ class LSTMNetwork(nn.Module):
 
 # Model configuration
 input_size = len(selected_features)
-hidden_size = 64
+hidden_size = 32
 num_layers = 2
-deep_nn_hidden_sizes = [ 128, 64, 32]  # Example: Three hidden layers with sizes 128, 64, and 32
+deep_nn_hidden_sizes = [64,32]  # Example: Three hidden layers with sizes 128, 64, and 32
 output_size = 1
-dropout_prob = 0.2
 
 # Initialize the model
-model = LSTMNetwork(input_size, hidden_size, num_layers, deep_nn_hidden_sizes, output_size, dropout_prob).to(device)
+model = LSTMNetwork(input_size, hidden_size, num_layers, deep_nn_hidden_sizes, output_size).to(device)
 
 # Loss function and optimizer
 criterion = nn.MSELoss()
-# optimizer = optim.Adam(model.parameters(), lr=0.0005)
+weight_decay = 1e-4 # Adjusted weight decay parameter
+optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=weight_decay)  # Increased learning rate slightly
 
-weight_decay = 1e-4  # Adjusted weight decay parameter
-optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=weight_decay)  # Increased learning rate slightly
+
 # Learning rate scheduler
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
 
 # Training loop parameters
-num_epochs = 1000
+num_epochs = 2000
 train_losses = []
 val_losses = []
 patience = 10
@@ -216,9 +223,9 @@ for epoch in range(num_epochs):
     if (epoch + 1) % 10 == 0:
         print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {loss.item():.4f}, Val Loss: {test_loss.item():.4f}')
 
-    # Step the scheduler based on the validation loss
+    # # Step the scheduler based on the validation loss
     scheduler.step(test_loss)
-
+    #
     # Early stopping
     if test_loss < best_val_loss:
         best_val_loss = test_loss
@@ -227,7 +234,7 @@ for epoch in range(num_epochs):
         patience_counter += 1
 
     if patience_counter >= patience:
-        print(f'Early stopping at epoch {epoch + 1} due to no improvement in validation loss')
+        print(f'Early stopping at epoch {epoch + 1}')
         break
 
 # Calculate RMSE, MSE, and R^2
@@ -282,4 +289,4 @@ traced_model.save('traced_model_lstm_dnn.pt')
 torch.save(model.state_dict(), 'model_weights.pth')
 
 # Export the model to ONNX
-torch.onnx.export(model, example_input, "lstm_travel_time_dnn2.onnx")
+torch.onnx.export(model, example_input, "lstm_travel_time_dnn11.onnx")
